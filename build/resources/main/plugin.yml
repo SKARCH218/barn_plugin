@@ -1,0 +1,21 @@
+name: BarnPlugin
+version: 1.0.0
+main: lightstudio.barn_plugin.BarnPlugin
+api-version: 1.19
+authors: [YourName]
+commands:
+  헛간:
+    description: 헛간 인벤토리를 엽니다.
+    usage: /헛간 <마을이름>
+  헛간관리:
+    description: 헛간 관리 명령어입니다.
+    usage: /헛간관리 도움말
+    permission: barnplugin.admin
+  소속확인:
+    description: 플레이어의 마을 소속을 확인합니다.
+  마을랭킹:
+    description: 마을 포인트 랭킹을 확인합니다.
+  barnadmin:
+    description: BarnPlugin 관리 명령어입니다.
+    usage: /barnadmin <reload>
+    permission: barnplugin.admin

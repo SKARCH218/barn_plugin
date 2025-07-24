@@ -1,0 +1,6 @@
+gui_title: "&f&l:offset_-8::heotgan:"
+quota_limit: 1000
+reward_item: DIAMOND
+reward_amount: 1
+daily_reset_time: "00:00"
+command_on_quota_fail: "tell {player} &c할당량을 채우지 못했습니다!"
