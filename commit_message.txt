@@ -1,0 +1,1 @@
+feat: Implement quota fail command, async DB, configurable limits, and improved feedback
