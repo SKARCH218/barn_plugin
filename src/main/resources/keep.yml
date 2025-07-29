@@ -1,7 +1,29 @@
 items:
-  WHEAT: 3
-  POTATO: 4
-  CARROT: 4
-  BEETROOT: 3
-  SUGAR_CANE: 1
-  MELON_SLICE: 1
+
+  WHEAT:
+    item: "WHEAT" # 대문자 사용시 바닐라 아이템
+    point: 1
+
+  POTATO:
+    item: "POTATO"
+    point: 4
+
+  CARROT:
+    item: "CARROT"
+    point: 4
+
+  BEETROOT:
+    item: "BEETROOT"
+    point: 3
+
+  SUGAR_CANE:
+    item: "SUGAR_CANE"
+    point: 1
+
+  MELON_SLICE:
+    item: "MELON_SLICE"
+    point: 1
+
+  BEAN:
+    item: "addcrop:addcrop_bean" # itemsadder 커스텀 아이템 사용 가능
+    point: 2

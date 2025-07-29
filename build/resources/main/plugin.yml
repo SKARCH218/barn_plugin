@@ -3,6 +3,7 @@ version: 1.0.0
 main: lightstudio.barn_plugin.BarnPlugin
 api-version: 1.19
 authors: [YourName]
+softdepend: [PlaceholderAPI, ItemsAdder]
 commands:
   헛간:
     description: 헛간 인벤토리를 엽니다.
@@ -19,3 +20,11 @@ commands:
     description: BarnPlugin 관리 명령어입니다.
     usage: /barnadmin <reload>
     permission: barnplugin.admin
+  헛간포인트:
+    description: 마을 헛간 포인트를 관리합니다.
+    usage: /헛간포인트 <확인/인출> <마을이름> [금액] [사유]
+  마을관리:
+    description: 마을을 관리합니다.
+    usage: /마을관리 <이장임명> <마을이름> <플레이어>
+    permission: barnplugin.admin
+    

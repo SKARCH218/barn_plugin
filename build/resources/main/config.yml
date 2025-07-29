@@ -1,6 +1,20 @@
 gui_title: "&f&l:offset_-8::heotgan:"
 quota_limit: 1000
-reward_item: DIAMOND
-reward_amount: 1
 daily_reset_time: "00:00"
 command_on_quota_fail: "tell {player} &c할당량을 채우지 못했습니다!"
+
+# 할당량을 다 채울시 say_hello: or say_goodbye: 랜덤 으로 둘둥 하나 실행
+reward:
+
+  # console command 로 "say goodbye" 실행
+  say_hello:
+    command-type: "console"
+    command:
+      - "say Hello"
+
+  # player command 로 "say goodbye" and "see you again" 동시 실행
+  say_goodbye:
+    command-type: "player"
+    command:
+      - "say goodbye"
+      - "see you again"

@@ -51,7 +51,8 @@ class DatabaseManager(private val plugin: JavaPlugin) {
         val createVillagePointsTable = """
             CREATE TABLE IF NOT EXISTS village_points (
                 village_name TEXT PRIMARY KEY,
-                points INTEGER NOT NULL
+                points INTEGER NOT NULL DEFAULT 0,
+                cumulative_points INTEGER NOT NULL DEFAULT 0
             );
         """.trimIndent()
 
@@ -68,15 +69,42 @@ class DatabaseManager(private val plugin: JavaPlugin) {
             );
         """.trimIndent()
 
+        val createTransactionsLogTable = """
+            CREATE TABLE IF NOT EXISTS transactions_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_uuid TEXT NOT NULL,
+                village_name TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        """.trimIndent()
+
         try {
             connection?.createStatement()?.use { statement ->
                 statement.execute(createVillagePointsTable)
                 statement.execute(createPlayerQuotasTable)
                 statement.execute(createFailedQuotasTable)
+                statement.execute(createTransactionsLogTable)
             }
             plugin.logger.info("Database tables created or already exist.")
         } catch (e: SQLException) {
             plugin.logger.severe("Failed to create tables: ${e.message}")
+        }
+    }
+
+    fun initializeVillages(villages: Collection<String>) {
+        val sql = "INSERT OR IGNORE INTO village_points (village_name) VALUES (?)"
+        try {
+            connection?.prepareStatement(sql)?.use { pstmt ->
+                for (villageName in villages) {
+                    pstmt.setString(1, villageName)
+                    pstmt.addBatch()
+                }
+                pstmt.executeBatch()
+            }
+        } catch (e: SQLException) {
+            plugin.logger.severe("Failed to initialize villages: ${e.message}")
         }
     }
 
@@ -179,10 +207,20 @@ class DatabaseManager(private val plugin: JavaPlugin) {
         }, executor)
     }
 
-    fun resetVillagePoints(): CompletableFuture<Void> {
+    fun resetVillagePoints(villages: Collection<String>): CompletableFuture<Void> {
         return CompletableFuture.runAsync({ 
-            setVillagePoints(BarnPlugin.VILLAGE_MODAKRI, 0).join()
-            setVillagePoints(BarnPlugin.VILLAGE_HWADEOKRI, 0).join()
+            val sql = "UPDATE village_points SET points = 0 WHERE village_name = ?"
+            try {
+                connection?.prepareStatement(sql)?.use { pstmt ->
+                    for (villageName in villages) {
+                        pstmt.setString(1, villageName)
+                        pstmt.addBatch()
+                    }
+                    pstmt.executeBatch()
+                }
+            } catch (e: SQLException) {
+                plugin.logger.severe("Failed to reset village points: ${e.message}")
+            }
         }, executor)
     }
 
@@ -241,6 +279,64 @@ class DatabaseManager(private val plugin: JavaPlugin) {
                 }
             } catch (e: SQLException) {
                 plugin.logger.severe("Failed to remove player $playerUUID from failed: ${e.message}")
+            }
+        }, executor)
+    }
+
+    
+
+    fun getCumulativeVillagePoints(villageName: String): CompletableFuture<Int> {
+        return CompletableFuture.supplyAsync({
+            var points = 0
+            val sql = "SELECT cumulative_points FROM village_points WHERE village_name = ?"
+            try {
+                connection?.prepareStatement(sql)?.use { pstmt ->
+                    pstmt.setString(1, villageName)
+                    val rs = pstmt.executeQuery()
+                    if (rs.next()) {
+                        points = rs.getInt("cumulative_points")
+                    }
+                }
+            } catch (e: SQLException) {
+                plugin.logger.severe("Failed to get cumulative village points for $villageName: ${e.message}")
+            }
+            points
+        }, executor)
+    }
+
+    fun setCumulativeVillagePoints(villageName: String, points: Int): CompletableFuture<Void> {
+        return CompletableFuture.runAsync({
+            val sql = """
+    INSERT INTO village_points (village_name, points, cumulative_points)
+    VALUES (?, 0, ?)
+    ON CONFLICT(village_name) DO UPDATE SET
+        cumulative_points = excluded.cumulative_points;
+"""
+            try {
+                connection?.prepareStatement(sql)?.use { pstmt ->
+                    pstmt.setString(1, villageName)
+                    pstmt.setInt(2, points)
+                    pstmt.executeUpdate()
+                }
+            } catch (e: SQLException) {
+                plugin.logger.severe("Failed to set cumulative village points for $villageName: ${e.message}")
+            }
+        }, executor)
+    }
+
+    fun logTransaction(playerUUID: UUID, villageName: String, amount: Int, reason: String): CompletableFuture<Void> {
+        return CompletableFuture.runAsync({
+            val sql = "INSERT INTO transactions_log (player_uuid, village_name, amount, reason) VALUES (?, ?, ?, ?)"
+            try {
+                connection?.prepareStatement(sql)?.use { pstmt ->
+                    pstmt.setString(1, playerUUID.toString())
+                    pstmt.setString(2, villageName)
+                    pstmt.setInt(3, amount)
+                    pstmt.setString(4, reason)
+                    pstmt.executeUpdate()
+                }
+            } catch (e: SQLException) {
+                plugin.logger.severe("Failed to log transaction for player $playerUUID: ${e.message}")
             }
         }, executor)
     }
