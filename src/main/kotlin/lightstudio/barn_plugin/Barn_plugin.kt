@@ -34,7 +34,7 @@ import net.milkbowl.vault.economy.Economy
 import java.util.concurrent.CompletableFuture
 
 data class Reward(val commandType: String, val commands: List<String>)
-data class Village(val name: String, var mayor: UUID?)
+data class Village(val name: String, var mayor: UUID?, val koreanName: String, val luckPermsGroup: String)
 
 class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
 
@@ -44,9 +44,11 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
 
     internal lateinit var databaseManager: DatabaseManager
     private val currentPlayerVillage = mutableMapOf<UUID, String>()
+    private val currentPage = mutableMapOf<UUID, Int>()
     private val itemPoints = mutableMapOf<String, Int>()
     internal val messages = mutableMapOf<String, String>()
     private var guiTitle: String = ""
+    private var guiLine: Int = 3
     private var quotaLimit: Int = 1000
     private val rewards = mutableMapOf<String, Reward>()
     private lateinit var dailyResetTime: LocalTime
@@ -57,8 +59,19 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
     private lateinit var townConfig: FileConfiguration
     internal val villages = mutableMapOf<String, Village>()
 
+    internal val playerTowns = mutableMapOf<UUID, String>()
+
     private var dailyResetTask: java.util.concurrent.ScheduledFuture<*>? = null
     private val schedulerExecutor = Executors.newSingleThreadScheduledExecutor()
+
+    private fun createGuiItem(material: Material, name: String, lore: List<String>): ItemStack {
+        val item = ItemStack(material)
+        val meta = item.itemMeta
+        meta?.setDisplayName(name)
+        meta?.lore = lore
+        item.itemMeta = meta
+        return item
+    }
 
     override fun onEnable() {
         // Plugin startup logic
@@ -88,11 +101,12 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
         }
 
         if (!setupEconomy()) {
-            logger.severe(String.format("[%s] - Disabled due to no Vault dependency found!", getDescription().getName()));
-            getServer().getPluginManager().disablePlugin(this);
+            logger.severe(String.format("[%s] - Disabled due to no Vault dependency found!", description.name));
+            server.pluginManager.disablePlugin(this);
             return;
         }
 
+        TownFeature(this)
         scheduleDailyReset()
     }
 
@@ -117,7 +131,8 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
     private fun loadConfigs() {
         // Load config.yml
         reloadConfig()
-        guiTitle = ChatColor.translateAlternateColorCodes('&', config.getString("gui_title") ?: "&f&l:offset_-8::heotgan:")
+        guiTitle = ChatColor.translateAlternateColorCodes('&', config.getString("gui.gui_title") ?: "&f&l:offset_-8::heotgan:")
+        guiLine = config.getInt("gui.gui_line", 3)
         quotaLimit = config.getInt("quota_limit", 1000)
         dailyResetTime = LocalTime.parse(config.getString("daily_reset_time", "00:00"))
         commandOnQuotaFail = config.getString("command_on_quota_fail", "") ?: ""
@@ -170,7 +185,18 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
         townConfig.getConfigurationSection("villages")?.getKeys(false)?.forEach { villageName ->
             val mayorUUID = townConfig.getString("villages.$villageName.mayor")
             val mayor = if (mayorUUID.isNullOrEmpty()) null else UUID.fromString(mayorUUID)
-            villages[villageName] = Village(villageName, mayor)
+            val koreanName = townConfig.getString("villages.$villageName.korean-name") ?: villageName
+            val luckPermsGroup = townConfig.getString("villages.$villageName.luckperms-group") ?: villageName
+            villages[villageName] = Village(villageName, mayor, koreanName, luckPermsGroup)
+        }
+
+        playerTowns.clear()
+        townConfig.getConfigurationSection("players")?.getKeys(false)?.forEach { uuidString ->
+            val uuid = UUID.fromString(uuidString)
+            val town = townConfig.getString("players.$uuidString")
+            if (town != null) {
+                playerTowns[uuid] = town
+            }
         }
     }
 
@@ -202,7 +228,9 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
     private fun processVillageResults() {
         databaseManager.getAllPlayerQuotas().thenAccept { allPlayerQuotas ->
             val playersToPunish = mutableListOf<UUID>()
-            for ((playerUUID, quota) in allPlayerQuotas) {
+            // Iterate through players assigned to a village
+            for ((playerUUID, villageName) in playerTowns) {
+                val quota = allPlayerQuotas[playerUUID] ?: 0 // Get quota, default to 0 if not found
                 if (quota < quotaLimit) {
                     playersToPunish.add(playerUUID)
                 }
@@ -211,10 +239,12 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
             for (playerUUID in playersToPunish) {
                 val player = Bukkit.getPlayer(playerUUID)
                 if (player != null && player.isOnline) {
-                    // Player is online, execute command immediately
-                    val commandToExecute = commandOnQuotaFail.replace("{player}", player.name)
-                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), commandToExecute)
-                    player.sendMessage(messages["quota_fail_message"] ?: "")
+                    // Player is online, execute command immediately on main thread
+                    Bukkit.getScheduler().runTask(this, Runnable {
+                        val commandToExecute = commandOnQuotaFail.replace("{player}", player.name)
+                        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), commandToExecute)
+                        player.sendMessage(messages["quota_fail_message"] ?: "")
+                    })
                 } else {
                     // Player is offline, mark for punishment on next join
                     databaseManager.markPlayerFailed(playerUUID)
@@ -235,11 +265,22 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                 }
             }.thenRun {
                 databaseManager.getAllVillagePoints().thenAccept { villagePoints ->
-                    val sortedVillages = villagePoints.entries.sortedByDescending { it.value }
-                    if (sortedVillages.isNotEmpty()) {
-                        val winner = sortedVillages.first()
-                        Bukkit.broadcastMessage(messages["village_win"]?.replace("%village%", winner.key)?.replace("%points%", winner.value.toString()) ?: "")
-                    }
+                    Bukkit.getScheduler().runTask(this, Runnable {
+                        val sortedVillages = villagePoints.entries.sortedByDescending { it.value }
+                        if (sortedVillages.isNotEmpty()) {
+                            val totalPoints = sortedVillages.sumOf { it.value }
+                            if (totalPoints == 0) {
+                                Bukkit.broadcastMessage(messages["draw"] ?: "오늘은 무승부입니다!")
+                            } else {
+                                val winner = sortedVillages.first()
+                                val winnerKoreanName = villages[winner.key]?.koreanName ?: winner.key
+                                Bukkit.broadcastMessage(messages["village_win"]?.replace("%village%", winnerKoreanName)?.replace("%points%", winner.value.toString()) ?: "")
+                            }
+                        } else {
+                            // Handle case where no villages have points (e.g., all 0 points)
+                            Bukkit.broadcastMessage(messages["no_village_winner"] ?: "오늘의 할당치 1등 마을이 없습니다.")
+                        }
+                    })
                 }
             }
     }
@@ -271,6 +312,31 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
 
             val clickedItem = event.currentItem ?: return
             if (clickedItem.type == Material.AIR) {
+                return
+            }
+
+            // Handle pagination buttons
+            if (clickedItem.itemMeta?.displayName == messages["gui_prev_page"]) {
+                val currentPageNum = currentPage.getOrDefault(player.uniqueId, 0)
+                if (currentPageNum > 0) {
+                    currentPage[player.uniqueId] = currentPageNum - 1
+                    // Re-open the GUI with the updated page
+                    val villageNameInput = currentPlayerVillage[player.uniqueId] ?: return
+                    val targetVillage = villages.values.firstOrNull { it.name.lowercase() == villageNameInput.lowercase() } ?: return
+                    openBarnGUI(player, targetVillage) // Create a helper function to open the GUI
+                }
+                return
+            } else if (clickedItem.itemMeta?.displayName == messages["gui_next_page"]) {
+                val itemsPerPage = (guiLine - 1) * 9
+                val totalPages = (itemPoints.size + itemsPerPage - 1) / itemsPerPage
+                val currentPageNum = currentPage.getOrDefault(player.uniqueId, 0)
+                if (currentPageNum < totalPages - 1) {
+                    currentPage[player.uniqueId] = currentPageNum + 1
+                    // Re-open the GUI with the updated page
+                    val villageNameInput = currentPlayerVillage[player.uniqueId] ?: return
+                    val targetVillage = villages.values.firstOrNull { it.name.lowercase() == villageNameInput.lowercase() } ?: return
+                    openBarnGUI(player, targetVillage) // Create a helper function to open the GUI
+                }
                 return
             }
 
@@ -439,6 +505,69 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
         }
     }
 
+    private fun openBarnGUI(player: Player, targetVillage: Village) {
+        val inventory: Inventory = Bukkit.createInventory(null, guiLine * 9, guiTitle)
+
+        val itemsPerPage = (guiLine - 1) * 9
+        val totalPages = (itemPoints.size + itemsPerPage - 1) / itemsPerPage
+        val currentPageNum = currentPage.getOrDefault(player.uniqueId, 0)
+
+        // Populate inventory with items from itemPoints for the current page
+        val startIndex = currentPageNum * itemsPerPage
+        val endIndex = min(startIndex + itemsPerPage, itemPoints.size)
+
+        itemPoints.keys.toList().subList(startIndex, endIndex).forEachIndexed { index, itemIdentifier ->
+            val itemStack: ItemStack? = if (itemIdentifier.contains(":")) { // ItemsAdder custom item
+                if (Bukkit.getPluginManager().getPlugin("ItemsAdder") != null) {
+                    CustomStack.getInstance(itemIdentifier)?.itemStack
+                } else {
+                    logger.warning("ItemsAdder is not installed or not loaded. Custom item '$itemIdentifier' will not be displayed.")
+                    null
+                }
+            } else { // Vanilla item
+                try {
+                    ItemStack(Material.valueOf(itemIdentifier.uppercase()), 1)
+                } catch (e: IllegalArgumentException) {
+                    logger.warning("Item '$itemIdentifier' in keep.yml is not a valid vanilla Material and will not be displayed.")
+                    null
+                }
+            }
+
+            if (itemStack != null) {
+                val meta = itemStack.itemMeta
+                meta?.lore = listOf(
+                    messages["item_lore_right_click"] ?: "",
+                    messages["item_lore_left_click"] ?: ""
+                )
+                itemStack.itemMeta = meta
+                inventory.setItem(index, itemStack)
+            }
+        }
+
+        // Add quota display item
+        val playerQuota = databaseManager.getPlayerQuota(player.uniqueId).join()
+        val villageQuota = databaseManager.getVillagePoints(targetVillage.name).join()
+
+        val quotaDisplayLore = listOf(
+            messages["gui_player_quota"]?.replace("%current_quota%", playerQuota.toString())?.replace("%quota_limit%", quotaLimit.toString()) ?: "",
+            messages["gui_village_quota"]?.replace("%current_village_quota%", villageQuota.toString()) ?: ""
+        )
+        val quotaDisplayItem = createGuiItem(Material.PAPER, messages["gui_quota_title"] ?: "할당량 정보", quotaDisplayLore)
+        inventory.setItem(guiLine * 9 - 5, quotaDisplayItem) // Center of the last row
+
+        // Add pagination buttons
+        if (currentPageNum > 0) {
+            val prevButton = createGuiItem(Material.ARROW, messages["gui_prev_page"] ?: "이전 페이지", listOf())
+            inventory.setItem(guiLine * 9 - 9, prevButton) // Bottom-left corner
+        }
+        if (currentPageNum < totalPages - 1) {
+            val nextButton = createGuiItem(Material.ARROW, messages["gui_next_page"] ?: "다음 페이지", listOf())
+            inventory.setItem(guiLine * 9 - 1, nextButton) // Bottom-right corner
+        }
+
+        player.openInventory(inventory)
+    }
+
     override fun onCommand(sender: CommandSender, command: Command, label: String, args: Array<out String>): Boolean {
         when (command.name) {
             "헛간" -> {
@@ -450,13 +579,15 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                     sender.sendMessage(messages["invalid_village_name"] ?: "")
                     return true
                 }
-                val villageName = args[0]
-                if (!villages.containsKey(villageName)) {
+                val villageNameInput = args[0].lowercase()
+                val targetVillage = villages.values.firstOrNull { it.koreanName.lowercase() == villageNameInput || it.name.lowercase() == villageNameInput }
+
+                if (targetVillage == null) {
                     sender.sendMessage(messages["invalid_village_name"] ?: "")
                     return true
                 }
 
-                currentPlayerVillage[sender.uniqueId] = villageName
+                currentPlayerVillage[sender.uniqueId] = targetVillage.name
 
                 val currentQuota = databaseManager.getPlayerQuota(sender.uniqueId).join()
                 if (currentQuota >= quotaLimit) {
@@ -464,39 +595,7 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                     return true
                 }
 
-                val inventory: Inventory = Bukkit.createInventory(null, 27, guiTitle) // 3 rows
-
-                // Populate inventory with items from itemPoints
-                itemPoints.keys.forEachIndexed { index, itemIdentifier ->
-                    if (index < 27) { // Max 27 slots for a 3-row chest
-                        val itemStack: ItemStack? = if (itemIdentifier.contains(":")) {
-                            if (Bukkit.getPluginManager().getPlugin("ItemsAdder") != null) {
-                                CustomStack.getInstance(itemIdentifier)?.itemStack
-                            } else {
-                                logger.warning("ItemsAdder is not installed or not loaded. Custom item '$itemIdentifier' will not be displayed.")
-                                null
-                            }
-                        } else {
-                            try {
-                                ItemStack(Material.valueOf(itemIdentifier.uppercase()), 1)
-                            } catch (e: IllegalArgumentException) {
-                                logger.warning("Item '$itemIdentifier' in keep.yml is not a valid vanilla Material and will not be displayed.")
-                                null
-                            }
-                        }
-
-                        if (itemStack != null) {
-                            val meta = itemStack.itemMeta
-                            meta?.lore = listOf(
-                                messages["item_lore_right_click"] ?: "",
-                                messages["item_lore_left_click"] ?: ""
-                            )
-                            itemStack.itemMeta = meta
-                            inventory.setItem(index, itemStack)
-                        }
-                    }
-                }
-                sender.openInventory(inventory)
+                openBarnGUI(sender, targetVillage)
                 return true
             }
 
@@ -588,15 +687,15 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                     return true
                 }
 
-                val playerGroups = villages.keys.map { "group.$it" }
-                val playerVillage = playerGroups.firstOrNull { sender.hasPermission(it) }?.substringAfter("group.")
+                val playerVillageId = playerTowns[sender.uniqueId]
+                val playerVillage = villages[playerVillageId]
 
                 when {
                     sender.isOp -> {
                         sender.sendMessage(messages["op_village_status"] ?: "")
                     }
                     playerVillage != null -> {
-                        sender.sendMessage(messages["village_status"]?.replace("%village%", playerVillage) ?: "")
+                        sender.sendMessage(messages["village_status"]?.replace("%village%", playerVillage.koreanName) ?: "")
                     }
                     else -> {
                         sender.sendMessage(messages["no_village_status"] ?: "")
@@ -613,9 +712,10 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                         sender.sendMessage("${ChatColor.GRAY}아직 기록된 마을 포인트가 없습니다.")
                     } else {
                         sortedPoints.forEachIndexed { index, entry ->
+                            val villageKoreanName = villages[entry.key]?.koreanName ?: entry.key
                             sender.sendMessage(messages["ranking_entry"]
                                 ?.replace("%rank%", (index + 1).toString())
-                                ?.replace("%village%", entry.key)
+                                ?.replace("%village%", villageKoreanName)
                                 ?.replace("%points%", entry.value.toString()) ?: "")
                         }
                     }
@@ -667,9 +767,10 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                             sender.sendMessage(messages["invalid_village_name"] ?: "")
                             return true
                         }
+                        val villageKoreanName = villages[villageName]?.koreanName ?: villageName
                         databaseManager.getCumulativeVillagePoints(villageName).thenAccept { points ->
                             sender.sendMessage(messages["barnpoint_current"]
-                                ?.replace("%village%", villageName)
+                                ?.replace("%village%", villageKoreanName)
                                 ?.replace("%points%", points.toString()) ?: "")
                         }
                     }
@@ -707,13 +808,14 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                             databaseManager.setCumulativeVillagePoints(villageName, currentPoints - amount).thenRun {
                                 econ?.depositPlayer(sender, amount.toDouble())
                                 databaseManager.logTransaction(sender.uniqueId, villageName, amount, reason)
+                                val villageKoreanName = villages[villageName]?.koreanName ?: villageName
                                 sender.sendMessage(messages["barnpoint_withdraw_success"]
-                                    ?.replace("%village%", villageName)
+                                    ?.replace("%village%", villageKoreanName)
                                     ?.replace("%amount%", amount.toString())
                                     ?.replace("%reason%", reason) ?: "")
                                 Bukkit.broadcastMessage(messages["barnpoint_broadcast_withdraw"]
                                     ?.replace("%player%", sender.name)
-                                    ?.replace("%village%", villageName)
+                                    ?.replace("%village%", villageKoreanName)
                                     ?.replace("%amount%", amount.toString())
                                     ?.replace("%reason%", reason) ?: "")
                             }
@@ -765,7 +867,7 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
         when (command.name) {
             "헛간" -> {
                 if (args.size == 1) {
-                    return villages.keys.filter { it.startsWith(args[0], true) }.toMutableList()
+                    return villages.values.map { it.koreanName }.filter { it.startsWith(args[0], true) }.toMutableList()
                 }
             }
 
@@ -838,20 +940,20 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
 }
 
 class BarnPlaceholderExpansion(private val plugin: BarnPlugin) : PlaceholderExpansion() {
-    override fun getIdentifier(): String = "skriptplaceholders"
+    override fun getIdentifier(): String = "barn"
     override fun getAuthor(): String = plugin.description.authors.firstOrNull() ?: "Unknown"
     override fun getVersion(): String = plugin.description.version
     override fun onPlaceholderRequest(player: Player?, identifier: String): String? {
         if (player == null) return ""
 
         return when (identifier) {
-            "할당량" -> plugin.databaseManager.getPlayerQuota(player.uniqueId).join().toString()
-            "소속마을" -> {
-                val playerGroups = plugin.villages.keys.map { "group.$it" }
-                val playerVillage = playerGroups.firstOrNull { player.hasPermission(it) }?.substringAfter("group.")
+            "quota" -> plugin.databaseManager.getPlayerQuota(player.uniqueId).join().toString()
+            "town" -> {
+                val townId = plugin.playerTowns[player.uniqueId]
+                val village = plugin.villages[townId]
                 when {
                     player.isOp -> plugin.messages["op_village_status"]
-                    playerVillage != null -> plugin.messages["village_status"]?.replace("%village%", playerVillage)
+                    village != null -> plugin.messages["village_status"]?.replace("%village%", village.koreanName)
                     else -> plugin.messages["no_village_status"]
                 }
             }

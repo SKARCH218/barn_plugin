@@ -1,20 +1,28 @@
-gui_title: "&f&l:offset_-8::heotgan:"
+gui:
+  gui_title: "&f&l:offset_-8::heotgan:"
+  gui_line: 3
 quota_limit: 1000
 daily_reset_time: "00:00"
-command_on_quota_fail: "tell {player} &c할당량을 채우지 못했습니다!"
+command_on_quota_fail: "/판자촌입장 {player}"
+land_price: 200000
+warp_location_after_purchase: "중앙역2"
 
 # 할당량을 다 채울시 say_hello: or say_goodbye: 랜덤 으로 둘둥 하나 실행
 reward:
 
-  # console command 로 "say goodbye" 실행
-  say_hello:
+  # # console command 로 "say goodbye" 실행
+  # say_hello:
+  #   command-type: "console"
+  #   command:
+  #     - "say Hello"
+
+  # # player command 로 "say goodbye" and "see you again" 동시 실행
+  # say_goodbye:
+  #   command-type: "player"
+  #   command:
+  #     - "say goodbye"
+  #     - "see you again"
+  give_diamond:
     command-type: "console"
     command:
-      - "say Hello"
-
-  # player command 로 "say goodbye" and "see you again" 동시 실행
-  say_goodbye:
-    command-type: "player"
-    command:
-      - "say goodbye"
-      - "see you again"
+      - "give {player} diamond 1"

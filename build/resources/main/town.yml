@@ -1,0 +1,22 @@
+# 마을 데이터 파일
+
+villages:
+  modak-ri:
+    mayor: ""
+    korean-name: "모닥리"
+    luckperms-group: "modack"
+  hwadeok-ri:
+    mayor: ""
+    korean-name: "화덕리"
+    luckperms-group: "hwaduck"
+
+# 각 마을의 최대 정원
+quotas:
+  modak-ri: 30
+  hwadeok-ri: 30
+
+# 다음에 배정될 마을 순서
+next-assignment: "modak-ri"
+
+# 플레이어별 마을 정보
+players:
