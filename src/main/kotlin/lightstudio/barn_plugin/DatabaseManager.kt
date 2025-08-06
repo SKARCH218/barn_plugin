@@ -341,6 +341,60 @@ class DatabaseManager(private val plugin: JavaPlugin) {
         }, executor)
     }
 
+    fun getPlayerVillage(playerUUID: UUID): CompletableFuture<String?> {
+        return CompletableFuture.supplyAsync({
+            var village: String? = null
+            val sql = "SELECT village_name FROM player_villages WHERE player_uuid = ?"
+            try {
+                connection?.prepareStatement(sql)?.use { pstmt ->
+                    pstmt.setString(1, playerUUID.toString())
+                    val rs = pstmt.executeQuery()
+                    if (rs.next()) {
+                        village = rs.getString("village_name")
+                    }
+                }
+            } catch (e: SQLException) {
+                plugin.logger.severe("Failed to get player village for $playerUUID: ${e.message}")
+            }
+            village
+        }, executor)
+    }
+
+    fun savePlayerData(playerUUID: UUID, points: Int, villageName: String): CompletableFuture<Void> {
+        return CompletableFuture.runAsync({
+            val sql = "INSERT OR REPLACE INTO player_data (player_uuid, points, village_name) VALUES (?, ?, ?)"
+            try {
+                connection?.prepareStatement(sql)?.use { pstmt ->
+                    pstmt.setString(1, playerUUID.toString())
+                    pstmt.setInt(2, points)
+                    pstmt.setString(3, villageName)
+                    pstmt.executeUpdate()
+                }
+            } catch (e: SQLException) {
+                plugin.logger.severe("Failed to save player data for $playerUUID: ${e.message}")
+            }
+        }, executor)
+    }
+
+    fun getPlayerPoints(playerUUID: UUID): CompletableFuture<Int> {
+        return CompletableFuture.supplyAsync({
+            var points = 0
+            val sql = "SELECT points FROM player_data WHERE player_uuid = ?"
+            try {
+                connection?.prepareStatement(sql)?.use { pstmt ->
+                    pstmt.setString(1, playerUUID.toString())
+                    val rs = pstmt.executeQuery()
+                    if (rs.next()) {
+                        points = rs.getInt("points")
+                    }
+                }
+            } catch (e: SQLException) {
+                plugin.logger.severe("Failed to get player points for $playerUUID: ${e.message}")
+            }
+            points
+        }, executor)
+    }
+
     fun getAllPlayerQuotas(): CompletableFuture<Map<UUID, Int>> {
         return CompletableFuture.supplyAsync({ 
             val quotasMap = mutableMapOf<UUID, Int>()

@@ -22,7 +22,7 @@ gui:
   gui_title: "&f&l:offset_-8::heotgan:"
   gui_line: 3
 ```
---------------------{현제 문제점}-------------------
+--------------------{해결됨}-------------------
 
 양 마을에 인원이 없었을때 집계시간이 되면
 아직도 무승부라고 출력이 안되고 오늘의 할당치 1등은 모닥리입니다! (0 포인트) 라고 출력돼
@@ -44,3 +44,8 @@ java.lang.Throwable: null
         at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642) ~[?:?]
         at java.base/java.lang.Thread.run(Thread.java:1583) ~[?:?]
 ```
+
+--------------------{현제 문제점}-------------------
+계속 `daily_reset_time:` 에 설정한 시간이 되지 않았는데 지속적으로 불규칙적으로 유저분들의 할당량이 초기화 되는 문제 발생
+원인 추정
+아마도 데이터 저장 로직이 비동기 이기 때문에

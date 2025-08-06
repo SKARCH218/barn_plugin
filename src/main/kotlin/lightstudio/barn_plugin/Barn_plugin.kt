@@ -1,6 +1,9 @@
 package lightstudio.barn_plugin
 
+import me.clip.placeholderapi.expansion.PlaceholderExpansion
+import net.milkbowl.vault.economy.Economy
 import org.bukkit.Bukkit
+import org.bukkit.ChatColor
 import org.bukkit.Material
 import org.bukkit.command.Command
 import org.bukkit.command.CommandExecutor
@@ -14,24 +17,20 @@ import org.bukkit.event.Listener
 import org.bukkit.event.inventory.ClickType
 import org.bukkit.event.inventory.InventoryClickEvent
 import org.bukkit.event.player.PlayerJoinEvent
+import org.bukkit.event.player.PlayerQuitEvent
 import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.java.JavaPlugin
-import org.bukkit.scheduler.BukkitRunnable
-import me.clip.placeholderapi.expansion.PlaceholderExpansion
 import java.io.File
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.temporal.ChronoUnit
-import java.util.UUID
-import kotlin.math.min
+import java.util.*
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import org.bukkit.ChatColor
-import dev.lone.itemsadder.api.ItemsAdder
-import dev.lone.itemsadder.api.CustomStack
-import net.milkbowl.vault.economy.Economy
-import java.util.concurrent.CompletableFuture
+import kotlin.math.min
 
 data class Reward(val commandType: String, val commands: List<String>)
 data class Village(val name: String, var mayor: UUID?, val koreanName: String, val luckPermsGroup: String)
@@ -41,6 +40,9 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
     companion object {
         var econ: Economy? = null
     }
+
+    internal val playerPoints = ConcurrentHashMap<UUID, Int>()
+    internal val dailyQuota = ConcurrentHashMap<UUID, Int>()
 
     internal lateinit var databaseManager: DatabaseManager
     private val currentPlayerVillage = mutableMapOf<UUID, String>()
@@ -108,6 +110,17 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
 
         TownFeature(this)
         scheduleDailyReset()
+
+        // Schedule periodic data saving
+        Bukkit.getScheduler().runTaskTimerAsynchronously(this, Runnable {
+            for (player in Bukkit.getOnlinePlayers()) {
+                databaseManager.getPlayerVillage(player.uniqueId).thenAccept { village ->
+                    village?.let {
+                        databaseManager.savePlayerData(player.uniqueId, playerPoints[player.uniqueId] ?: 0, it)
+                    }
+                }
+            }
+        }, 72000L, 72000L) // Run every hour (20 ticks * 60 seconds * 60 minutes)
     }
 
     private fun setupEconomy(): Boolean {
@@ -124,6 +137,13 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
 
     override fun onDisable() {
         // Plugin shutdown logic
+        for (player in Bukkit.getOnlinePlayers()) {
+            databaseManager.getPlayerVillage(player.uniqueId).thenAccept { village ->
+                village?.let {
+                    databaseManager.savePlayerData(player.uniqueId, playerPoints[player.uniqueId] ?: 0, it)
+                }
+            }
+        }
         databaseManager.disconnect()
         schedulerExecutor.shutdownNow()
     }
@@ -283,18 +303,29 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                     })
                 }
             }
+        }
     }
-}
 
     @EventHandler
     fun onPlayerJoin(event: PlayerJoinEvent) {
         val player = event.player
-        databaseManager.isPlayerFailed(player.uniqueId).thenAccept { isFailed ->
-            if (isFailed) {
-                val commandToExecute = commandOnQuotaFail.replace("{player}", player.name)
-                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), commandToExecute)
-                player.sendMessage(messages["quota_fail_message"] ?: "")
-                databaseManager.removePlayerFailed(player.uniqueId)
+        databaseManager.getPlayerVillage(player.uniqueId).thenAccept { village ->
+            if (village == null) {
+                playerPoints[player.uniqueId] = 0
+            } else {
+                databaseManager.getPlayerPoints(player.uniqueId).thenAccept { points ->
+                    playerPoints[player.uniqueId] = points
+                }
+            }
+        }
+    }
+
+    @EventHandler
+    fun onPlayerQuit(event: PlayerQuitEvent) {
+        val player = event.player
+        databaseManager.getPlayerVillage(player.uniqueId).thenAccept { village ->
+            village?.let {
+                databaseManager.savePlayerData(player.uniqueId, playerPoints[player.uniqueId] ?: 0, it)
             }
         }
     }
@@ -344,8 +375,8 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
             val entry = itemPoints.entries.find { (itemIdentifier, _) ->
                 if (itemIdentifier.contains(":")) { // ItemsAdder custom item
                     if (Bukkit.getPluginManager().getPlugin("ItemsAdder") != null) {
-                        val isCustomItem = ItemsAdder.isCustomItem(clickedItem)
-                        val clickedCustomItemName = ItemsAdder.getCustomItemName(clickedItem)
+                        val isCustomItem = dev.lone.itemsadder.api.ItemsAdder.isCustomItem(clickedItem)
+                        val clickedCustomItemName = dev.lone.itemsadder.api.ItemsAdder.getCustomItemName(clickedItem)
                         isCustomItem && clickedCustomItemName == itemIdentifier
                     } else {
                         false
@@ -360,7 +391,7 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
 
             val displayItemName: String = if (itemIdentifier.contains(":")) {
                 if (Bukkit.getPluginManager().getPlugin("ItemsAdder") != null) {
-                    CustomStack.getInstance(itemIdentifier)?.itemStack?.itemMeta?.displayName ?: itemIdentifier
+                    dev.lone.itemsadder.api.CustomStack.getInstance(itemIdentifier)?.itemStack?.itemMeta?.displayName ?: itemIdentifier
                 } else {
                     itemIdentifier
                 }
@@ -390,8 +421,8 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                         var amount = 0
                         for (item in player.inventory.contents) {
                             if (item == null || item.type.isAir) continue
-                            if (ItemsAdder.isCustomItem(item)) {
-                                if (ItemsAdder.getCustomItemName(item) == itemIdentifier) {
+                            if (dev.lone.itemsadder.api.ItemsAdder.isCustomItem(item)) {
+                                if (dev.lone.itemsadder.api.ItemsAdder.getCustomItemName(item) == itemIdentifier) {
                                     amount += item.amount
                                 }
                             }
@@ -444,7 +475,7 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                 // Remove items from inventory
                 if (itemIdentifier.contains(":")) {
                     if (Bukkit.getPluginManager().getPlugin("ItemsAdder") != null) {
-                        val customStackToRemove = CustomStack.getInstance(itemIdentifier)
+                        val customStackToRemove = dev.lone.itemsadder.api.CustomStack.getInstance(itemIdentifier)
                         if (customStackToRemove != null) {
                             val itemStackToRemove = customStackToRemove.itemStack.clone()
                             itemStackToRemove.amount = actualItemsToProcess
@@ -519,7 +550,7 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
         itemPoints.keys.toList().subList(startIndex, endIndex).forEachIndexed { index, itemIdentifier ->
             val itemStack: ItemStack? = if (itemIdentifier.contains(":")) { // ItemsAdder custom item
                 if (Bukkit.getPluginManager().getPlugin("ItemsAdder") != null) {
-                    CustomStack.getInstance(itemIdentifier)?.itemStack
+                    dev.lone.itemsadder.api.CustomStack.getInstance(itemIdentifier)?.itemStack
                 } else {
                     logger.warning("ItemsAdder is not installed or not loaded. Custom item '$itemIdentifier' will not be displayed.")
                     null
