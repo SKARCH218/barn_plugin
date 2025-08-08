@@ -54,20 +54,27 @@ class DatabaseManager(private val plugin: JavaPlugin) {
                 points INTEGER NOT NULL DEFAULT 0,
                 cumulative_points INTEGER NOT NULL DEFAULT 0
             );
-        """.trimIndent()
+        """
 
         val createPlayerQuotasTable = """
             CREATE TABLE IF NOT EXISTS player_quotas (
                 player_uuid TEXT PRIMARY KEY,
                 quota INTEGER NOT NULL
             );
-        """.trimIndent()
+        """
+
+        val createPlayerVillagesTable = """
+            CREATE TABLE IF NOT EXISTS player_villages (
+                player_uuid TEXT PRIMARY KEY,
+                village_name TEXT NOT NULL
+            );
+        """
 
         val createFailedQuotasTable = """
             CREATE TABLE IF NOT EXISTS failed_quotas (
                 player_uuid TEXT PRIMARY KEY
             );
-        """.trimIndent()
+        """
 
         val createTransactionsLogTable = """
             CREATE TABLE IF NOT EXISTS transactions_log (
@@ -78,14 +85,24 @@ class DatabaseManager(private val plugin: JavaPlugin) {
                 reason TEXT NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             );
-        """.trimIndent()
+        """
+
+        val createPlayerDataTable = """
+            CREATE TABLE IF NOT EXISTS player_data (
+                player_uuid TEXT PRIMARY KEY,
+                points INTEGER NOT NULL,
+                village_name TEXT NOT NULL
+            );
+        """
 
         try {
             connection?.createStatement()?.use { statement ->
                 statement.execute(createVillagePointsTable)
                 statement.execute(createPlayerQuotasTable)
+                statement.execute(createPlayerVillagesTable)
                 statement.execute(createFailedQuotasTable)
                 statement.execute(createTransactionsLogTable)
+                statement.execute(createPlayerDataTable)
             }
             plugin.logger.info("Database tables created or already exist.")
         } catch (e: SQLException) {
@@ -357,6 +374,21 @@ class DatabaseManager(private val plugin: JavaPlugin) {
                 plugin.logger.severe("Failed to get player village for $playerUUID: ${e.message}")
             }
             village
+        }, executor)
+    }
+
+    fun setPlayerVillage(playerUUID: UUID, villageName: String): CompletableFuture<Void> {
+        return CompletableFuture.runAsync({
+            val sql = "INSERT OR REPLACE INTO player_villages (player_uuid, village_name) VALUES (?, ?)"
+            try {
+                connection?.prepareStatement(sql)?.use { pstmt ->
+                    pstmt.setString(1, playerUUID.toString())
+                    pstmt.setString(2, villageName)
+                    pstmt.executeUpdate()
+                }
+            } catch (e: SQLException) {
+                plugin.logger.severe("Failed to set player village for $playerUUID: ${e.message}")
+            }
         }, executor)
     }
 

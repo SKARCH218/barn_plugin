@@ -566,10 +566,14 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
 
             if (itemStack != null) {
                 val meta = itemStack.itemMeta
-                meta?.lore = listOf(
-                    messages["item_lore_right_click"] ?: "",
-                    messages["item_lore_left_click"] ?: ""
-                )
+                val lore = mutableListOf<String>()
+                lore.add(messages["item_lore_right_click"] ?: "§e우클릭: §f1개")
+                lore.add(messages["item_lore_left_click"] ?: "§e좌클릭: §f64개")
+                val points = itemPoints[itemIdentifier] ?: 0
+                if (points > 0) {
+                    lore.add(messages["item_lore_points"]?.replace("%points%", points.toString()) ?: "§f포인트: §a${points}")
+                }
+                meta?.lore = lore
                 itemStack.itemMeta = meta
                 inventory.setItem(index, itemStack)
             }
