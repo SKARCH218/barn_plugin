@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "lightstudio"
-version = "2.0-SNAPSHOT"
+version = "3.0"
 
 repositories {
     mavenCentral()

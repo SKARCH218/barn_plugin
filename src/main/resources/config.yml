@@ -3,6 +3,7 @@ gui:
   gui_line: 3
 quota_limit: 1000
 daily_reset_time: "00:00"
+daily_reset_hour: 12
 command_on_quota_fail: "/판자촌입장 {player}"
 land_price: 200000
 warp_location_after_purchase: "중앙역2"

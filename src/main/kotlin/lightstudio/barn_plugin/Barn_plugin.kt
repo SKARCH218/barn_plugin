@@ -54,6 +54,7 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
     private var quotaLimit: Int = 1000
     private val rewards = mutableMapOf<String, Reward>()
     private lateinit var dailyResetTime: LocalTime
+    private var dailyResetHour: Int = 12
     private var commandOnQuotaFail: String = ""
 
     private lateinit var langConfig: FileConfiguration
@@ -155,6 +156,7 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
         guiLine = config.getInt("gui.gui_line", 3)
         quotaLimit = config.getInt("quota_limit", 1000)
         dailyResetTime = LocalTime.parse(config.getString("daily_reset_time", "00:00"))
+        dailyResetHour = config.getInt("daily_reset_hour", 12)
         commandOnQuotaFail = config.getString("command_on_quota_fail", "") ?: ""
 
         rewards.clear()
@@ -231,26 +233,39 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
         dailyResetTask?.cancel(false)
 
         val now = LocalDateTime.now()
-        var nextReset = now.with(dailyResetTime)
-        if (now.isAfter(nextReset)) {
-            nextReset = nextReset.plusDays(1)
+        // Start with today's reset time as a potential first reset
+        var nextReset = now.toLocalDate().atTime(dailyResetTime)
+
+        // If this is in the past, it can't be the next reset time.
+        // Let's find the last reset time that should have occurred.
+        if (nextReset.isAfter(now)) {
+            // If today's reset time is in the future, the last reset might have been yesterday.
+            nextReset = nextReset.minusDays(1)
         }
+
+        // At this point, `nextReset` is the time of the anchor reset for today or yesterday.
+        // Now, add the interval until we are in the future.
+        while (nextReset.isBefore(now)) {
+            nextReset = nextReset.plusHours(dailyResetHour.toLong())
+        }
+
         val initialDelayMillis = ChronoUnit.MILLIS.between(now, nextReset)
 
         dailyResetTask = schedulerExecutor.schedule({
             Bukkit.getScheduler().runTask(this, Runnable { // Run on main thread for Bukkit API calls
                 processVillageResults()
-                scheduleDailyReset() // Reschedule for next reset time
+                scheduleDailyReset() // Reschedule for the next one
             })
         }, initialDelayMillis, TimeUnit.MILLISECONDS)
+        logger.info("다음 헛간 초기화 시간: $nextReset")
     }
 
     private fun processVillageResults() {
         databaseManager.getAllPlayerQuotas().thenAccept { allPlayerQuotas ->
+            // Punishment logic (remains the same)
             val playersToPunish = mutableListOf<UUID>()
-            // Iterate through players assigned to a village
             for ((playerUUID, villageName) in playerTowns) {
-                val quota = allPlayerQuotas[playerUUID] ?: 0 // Get quota, default to 0 if not found
+                val quota = allPlayerQuotas[playerUUID] ?: 0
                 if (quota < quotaLimit) {
                     playersToPunish.add(playerUUID)
                 }
@@ -259,48 +274,51 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
             for (playerUUID in playersToPunish) {
                 val player = Bukkit.getPlayer(playerUUID)
                 if (player != null && player.isOnline) {
-                    // Player is online, execute command immediately on main thread
                     Bukkit.getScheduler().runTask(this, Runnable {
                         val commandToExecute = commandOnQuotaFail.replace("{player}", player.name)
                         Bukkit.dispatchCommand(Bukkit.getConsoleSender(), commandToExecute)
                         player.sendMessage(messages["quota_fail_message"] ?: "")
                     })
                 } else {
-                    // Player is offline, mark for punishment on next join
                     databaseManager.markPlayerFailed(playerUUID)
                 }
             }
 
-            databaseManager.resetAllQuotas().thenCompose { 
-                val villageNames = villages.keys.toList()
-                val futures = villageNames.map { villageName ->
-                    databaseManager.getVillagePoints(villageName).thenCompose { dailyPoints ->
-                        databaseManager.getCumulativeVillagePoints(villageName).thenCompose { cumulativePoints ->
-                            databaseManager.setCumulativeVillagePoints(villageName, cumulativePoints + dailyPoints)
+            // --- Reordered and optimized logic starts here ---
+
+            // 1. Get all daily village points
+            databaseManager.getAllVillagePoints().thenCompose { villagePoints ->
+                // Determine winner and broadcast message
+                Bukkit.getScheduler().runTask(this, Runnable {
+                    val sortedVillages = villagePoints.entries.sortedByDescending { it.value }
+                    if (sortedVillages.isNotEmpty()) {
+                        val totalPoints = sortedVillages.sumOf { it.value }
+                        if (totalPoints == 0) {
+                            Bukkit.broadcastMessage(messages["draw"] ?: "오늘은 무승부입니다!")
+                        } else {
+                            val winner = sortedVillages.first()
+                            val winnerKoreanName = villages[winner.key]?.koreanName ?: winner.key
+                            Bukkit.broadcastMessage(messages["village_win"]?.replace("%village%", winnerKoreanName)?.replace("%points%", winner.value.toString()) ?: "")
                         }
+                    } else {
+                        Bukkit.broadcastMessage(messages["no_village_winner"] ?: "오늘의 할당치 1등 마을이 없습니다.")
+                    }
+                })
+
+                // 2. Update cumulative points using the fetched daily points
+                val villageNames = villages.keys.toList()
+                val cumulativeUpdateFutures = villageNames.map { villageName ->
+                    val dailyPoints = villagePoints[villageName] ?: 0 // Use points from the map
+                    databaseManager.getCumulativeVillagePoints(villageName).thenCompose { cumulativePoints ->
+                        databaseManager.setCumulativeVillagePoints(villageName, cumulativePoints + dailyPoints)
                     }
                 }
-                CompletableFuture.allOf(*futures.toTypedArray()).thenCompose {
+                CompletableFuture.allOf(*cumulativeUpdateFutures.toTypedArray()).thenCompose {
+                    // 3. Reset daily village points
                     databaseManager.resetVillagePoints(villages.keys)
-                }
-            }.thenRun {
-                databaseManager.getAllVillagePoints().thenAccept { villagePoints ->
-                    Bukkit.getScheduler().runTask(this, Runnable {
-                        val sortedVillages = villagePoints.entries.sortedByDescending { it.value }
-                        if (sortedVillages.isNotEmpty()) {
-                            val totalPoints = sortedVillages.sumOf { it.value }
-                            if (totalPoints == 0) {
-                                Bukkit.broadcastMessage(messages["draw"] ?: "오늘은 무승부입니다!")
-                            } else {
-                                val winner = sortedVillages.first()
-                                val winnerKoreanName = villages[winner.key]?.koreanName ?: winner.key
-                                Bukkit.broadcastMessage(messages["village_win"]?.replace("%village%", winnerKoreanName)?.replace("%points%", winner.value.toString()) ?: "")
-                            }
-                        } else {
-                            // Handle case where no villages have points (e.g., all 0 points)
-                            Bukkit.broadcastMessage(messages["no_village_winner"] ?: "오늘의 할당치 1등 마을이 없습니다.")
-                        }
-                    })
+                }.thenCompose {
+                    // 4. Reset all player quotas
+                    databaseManager.resetAllQuotas()
                 }
             }
         }
@@ -414,8 +432,6 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
             }
 
             databaseManager.getPlayerQuota(player.uniqueId).thenAccept { currentQuotaPoints ->
-                val availableQuotaPoints = quotaLimit - currentQuotaPoints
-
                 val playerInventoryAmountOfItems = if (itemIdentifier.contains(":")) {
                     if (Bukkit.getPluginManager().getPlugin("ItemsAdder") != null) {
                         var amount = 0
@@ -435,36 +451,14 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                     player.inventory.all(clickedItem.type).values.sumOf { it.amount }
                 }
 
-                // Calculate how many items can be processed based on player's inventory and click type
-                val itemsToConsider = min(amountToProcess, playerInventoryAmountOfItems)
-
-                // Calculate potential points from these items
-                val potentialPointsFromItems = itemsToConsider * itemPointPerUnit
-
-                // Determine actual points earned based on available quota
-                val pointsEarnedThisTransaction = min(potentialPointsFromItems, availableQuotaPoints)
-
-                // Calculate actual number of items to remove based on points earned
-                var actualItemsToProcess = if (itemPointPerUnit > 0) {
-                    val calculatedAmount = pointsEarnedThisTransaction / itemPointPerUnit
-                    if (pointsEarnedThisTransaction > 0 && calculatedAmount == 0) {
-                        1 // If points earned is positive but calculated amount is 0, process at least 1 item
-                    } else {
-                        calculatedAmount
-                    }
-                } else {
-                    0
-                }
-                actualItemsToProcess = min(actualItemsToProcess, itemsToConsider)
+                val actualItemsToProcess = min(amountToProcess, playerInventoryAmountOfItems)
 
                 if (actualItemsToProcess <= 0) {
-                    if (availableQuotaPoints <= 0) {
-                        player.sendMessage(messages["quota_full_message"] ?: "")
-                    } else {
-                        player.sendMessage(messages["inventory_no_item"] ?: "")
-                    }
+                    player.sendMessage(messages["inventory_no_item"] ?: "")
                     return@thenAccept
                 }
+
+                val pointsEarnedThisTransaction = actualItemsToProcess * itemPointPerUnit
 
                 val village = currentPlayerVillage[player.uniqueId] ?: run {
                     player.sendMessage(messages["village_info_not_set"] ?: "")
@@ -504,9 +498,10 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                                         ?.replace("%amount%", actualItemsToProcess.toString())
                                         ?.replace("%points%", pointsEarnedThisTransaction.toString())
                                         ?.replace("%current_quota%", newQuota.toString())
-                                        ?.replace("%remaining_quota%", remainingQuota.toString()) ?: "")
+                                        ?.replace("%remaining_quota%", if (remainingQuota > 0) remainingQuota.toString() else "0") ?: "")
 
-                                    if (newQuota >= quotaLimit) {
+                                    // Check if the quota was just met
+                                    if (currentQuotaPoints < quotaLimit && newQuota >= quotaLimit) {
                                         if (rewards.isNotEmpty()) {
                                             val randomRewardKey = rewards.keys.random()
                                             val reward = rewards[randomRewardKey]
@@ -623,12 +618,6 @@ class BarnPlugin : JavaPlugin(), Listener, CommandExecutor, TabCompleter {
                 }
 
                 currentPlayerVillage[sender.uniqueId] = targetVillage.name
-
-                val currentQuota = databaseManager.getPlayerQuota(sender.uniqueId).join()
-                if (currentQuota >= quotaLimit) {
-                    sender.sendMessage(messages["quota_full_message"] ?: "오늘 할당량을 다 채웠습니다!")
-                    return true
-                }
 
                 openBarnGUI(sender, targetVillage)
                 return true
